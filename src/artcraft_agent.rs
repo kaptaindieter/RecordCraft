@@ -27,7 +27,7 @@ pub const QUICK_CHIPS: [(&str, &str, &str); 4] = [
 pub struct CustomBot {
     pub id: String,
     pub name: String,
-    #[serde(alias = "modelId", alias = "model", alias = "api_model_id", alias = "model_id", default)]
+    #[serde(rename = "model_id", alias = "api_model_id", alias = "modelId", alias = "model", default)]
     pub api_model_id: String,
     #[serde(alias = "baseUrl", alias = "base_url", alias = "endpoint", default)]
     pub endpoint: String,
@@ -139,6 +139,7 @@ const RAW_GPT: &[u8] = include_bytes!("../assets/ai_icons/GPT_ICON.rgba");
 const RAW_LLAMA: &[u8] = include_bytes!("../assets/ai_icons/LLAMA_ICON.rgba");
 const RAW_MISTRAL: &[u8] = include_bytes!("../assets/ai_icons/MISTRAL_ICON.rgba");
 const RAW_QWEN: &[u8] = include_bytes!("../assets/ai_icons/QWEN_ICON.rgba");
+const RAW_CLAUDE: &[u8] = include_bytes!("../assets/ai_icons/CLAUDE_ICON.rgba");
 
 #[derive(Default)]
 pub struct ModelIconCache {
@@ -154,6 +155,8 @@ impl ModelIconCache {
             "gemini"
         } else if lower.contains("openai") || lower.contains("gpt") || lower.contains("o1") || lower.contains("o3") {
             "gpt"
+        } else if lower.contains("claude") || lower.contains("anthropic") {
+            "claude"
         } else if lower.contains("llama") || lower.contains("meta") || lower.contains("ollama") || lower.contains("groq") {
             "llama"
         } else if lower.contains("mistral") || lower.contains("codestral") {
@@ -175,6 +178,7 @@ impl ModelIconCache {
             "llama" => RAW_LLAMA,
             "mistral" => RAW_MISTRAL,
             "qwen" => RAW_QWEN,
+            "claude" => RAW_CLAUDE,
             _ => RAW_AI,
         };
 
@@ -803,7 +807,7 @@ impl ArtCraftAgent {
                                                 // Provider Icon Row (7 supported provider logos)
                                                 ui.horizontal_wrapped(|ui| {
                                                     ui.spacing_mut().item_spacing.x = 7.0;
-                                                    for p_key in ["deepseek", "gemini", "gpt", "llama", "mistral", "qwen", "ai_icon"] {
+                                                    for p_key in ["deepseek", "gemini", "gpt", "llama", "mistral", "qwen", "claude", "ai_icon"] {
                                                         let p_tex = self.icon_cache.get_for_str(ui.ctx(), p_key);
                                                         egui::Frame::new()
                                                             .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 10))
@@ -1633,12 +1637,13 @@ impl ArtCraftAgent {
                         .color(Color32::from_rgb(148, 163, 184)),
                 );
 
-                let presets: [(&str, &str, &str, &str); 7] = [
+                let presets: [(&str, &str, &str, &str); 8] = [
                     ("OpenAI GPT", "gpt", "e.g. https://api.openai.com/v1/chat/completions", "e.g. gpt-4o"),
                     ("Gemini", "gemini", "e.g. https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", "e.g. gemini-2.5-flash"),
                     ("DeepSeek", "deepseek", "e.g. https://api.deepseek.com/chat/completions", "e.g. deepseek-chat"),
                     ("Mistral", "mistral", "e.g. https://api.mistral.ai/v1/chat/completions", "e.g. mistral-large-latest"),
                     ("Qwen", "qwen", "e.g. https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions", "e.g. qwen-plus"),
+                    ("Claude", "claude", "e.g. https://api.anthropic.com/v1/chat/completions", "e.g. claude-3-5-sonnet-latest"),
                     ("Local Ollama", "llama", "e.g. http://localhost:11434/v1/chat/completions", "e.g. llama3.1"),
                     ("Custom API", "ai_icon", "e.g. https://api.openai.com/api/v1/chat/completions", "e.g. llama-3.1-8b"),
                 ];
