@@ -6,7 +6,7 @@ use egui::{Color32, CornerRadius, Rect, RichText, Stroke, pos2, vec2};
 use crate::artcraft_agent::ArtCraftAgent;
 use crate::artcraft_drive::RecordCraftDrive;
 use crate::artcraft_theme::{paint_aurora_border, AppTheme};
-use crate::audio_engine::{poll_system_audio, set_process_volume, AudioAppSession, SystemAudioState};
+use crate::audio_engine::{poll_system_audio, set_app_volume_by_name, set_process_volume, AudioAppSession, SystemAudioState};
 use crate::hotkeys::{HotkeyEvent, HotkeyManager};
 use crate::preview::ScreenPreview;
 use crate::recorder::{
@@ -32,9 +32,12 @@ pub struct RecordCraftApp {
     pub show_audio_guide: bool,
     pub audio_state: SystemAudioState,
     pub selected_app_pids: HashSet<u32>,
+    pub selected_app_names: HashSet<String>,
+    pub show_all_running_apps: bool,
+    pub muted_during_recording: Vec<(String, f32)>,
     pub smoothed_mic_peak: f32,
     pub smoothed_master_peak: f32,
-    pub smoothed_app_peaks: HashMap<u32, f32>,
+    pub smoothed_app_peaks: HashMap<String, f32>,
     pub mic_muted: bool,
     pub master_muted: bool,
     pub theme: AppTheme,
@@ -133,6 +136,9 @@ impl RecordCraftApp {
             show_audio_guide: false,
             audio_state: SystemAudioState::default(),
             selected_app_pids: HashSet::new(),
+            selected_app_names: HashSet::new(),
+            show_all_running_apps: false,
+            muted_during_recording: Vec::new(),
             smoothed_mic_peak: 0.0,
             smoothed_master_peak: 0.0,
             smoothed_app_peaks: HashMap::new(),
@@ -140,6 +146,25 @@ impl RecordCraftApp {
             master_muted: false,
             theme: AppTheme::load_global(),
             control_rx: None,
+        }
+    }
+
+    pub fn apply_per_app_recording_mute(&mut self) {
+        self.restore_per_app_recording_mute();
+        if self.config.audio_routing == AudioRoutingMode::PerAppIsolation {
+            for app in &self.audio_state.apps {
+                let key = app.name.to_ascii_lowercase();
+                if !self.selected_app_names.contains(&key) && !app.is_muted {
+                    set_app_volume_by_name(&app.name, app.volume, true);
+                    self.muted_during_recording.push((app.name.clone(), app.volume));
+                }
+            }
+        }
+    }
+
+    pub fn restore_per_app_recording_mute(&mut self) {
+        for (exe_name, vol) in self.muted_during_recording.drain(..) {
+            set_app_volume_by_name(&exe_name, vol, false);
         }
     }
 
@@ -262,7 +287,8 @@ impl RecordCraftApp {
             match ev {
                 HotkeyEvent::ToggleRecord => {
                     if self.recorder.is_recording() {
-                        if let Ok((file, proj)) = self.recorder.stop_recording(&self.drive) {
+                        self.restore_per_app_recording_mute();
+                            if let Ok((file, proj)) = self.recorder.stop_recording(&self.drive) {
                             self.status_message = format!(
                                 "Recording stopped & saved: {}",
                                 file.file_name().and_then(|n| n.to_str()).unwrap_or("")
@@ -273,7 +299,8 @@ impl RecordCraftApp {
                         if let Err(e) = self.recorder.start_recording(&self.config, &self.monitors, &self.drive) {
                             self.status_message = format!("Failed to start recording: {e}");
                         } else {
-                            self.status_message = "Recording in progress (Press F9 to stop)...".to_string();
+                            self.apply_per_app_recording_mute();
+                                self.status_message = "Recording in progress (Press F9 to stop)...".to_string();
                         }
                     }
                 }
@@ -338,10 +365,11 @@ impl eframe::App for RecordCraftApp {
         update_smooth(&mut self.smoothed_mic_peak, if self.mic_muted { 0.0 } else { real_audio.mic_peak });
 
         for app in &real_audio.apps {
-            if !self.selected_app_pids.contains(&app.pid) && self.audio_state.apps.iter().all(|a| a.pid != app.pid) {
-                self.selected_app_pids.insert(app.pid);
+            let key = app.name.to_ascii_lowercase();
+            if !self.selected_app_names.contains(&key) && self.audio_state.apps.iter().all(|a| a.name.to_ascii_lowercase() != key) {
+                self.selected_app_names.insert(key.clone());
             }
-            let entry = self.smoothed_app_peaks.entry(app.pid).or_insert(0.0);
+            let entry = self.smoothed_app_peaks.entry(key).or_insert(0.0);
             let target = if app.is_muted { 0.0 } else { app.peak };
             update_smooth(entry, target);
         }
@@ -469,8 +497,8 @@ impl eframe::App for RecordCraftApp {
                         ui.add_space(10.0);
                         let markers_count = self.recorder.highlight_markers.len();
                         ui.label(RichText::new(format!("Markers: {markers_count}")).size(11.5).color(pal.text_dim));
-                        ui.label(RichText::new("•").color(pal.card_border));
-                        ui.label(RichText::new(format!("{} · {} FPS", self.config.codec.short_badge(), self.config.framerate)).size(11.5).color(pal.text_dim));
+                        ui.label(RichText::new("â€¢").color(pal.card_border));
+                        ui.label(RichText::new(format!("{} Â· {} FPS", self.config.codec.short_badge(), self.config.framerate)).size(11.5).color(pal.text_dim));
                     });
                 });
             });
@@ -523,7 +551,7 @@ impl eframe::App for RecordCraftApp {
                         );
                     }
 
-                    // Overlay 1: Live Status Badge (Top Left) — CLEAN, NO DUPLICATE DOT!
+                    // Overlay 1: Live Status Badge (Top Left) â€” CLEAN, NO DUPLICATE DOT!
                     let badge_bg = Rect::from_min_size(canvas_rect.min + vec2(12.0, 12.0), vec2(110.0, 26.0));
                     ui.painter().rect(badge_bg, 5.0, Color32::from_black_alpha(200), Stroke::new(1.0, Color32::from_rgb(55, 65, 85)), egui::StrokeKind::Inside);
 
@@ -542,7 +570,7 @@ impl eframe::App for RecordCraftApp {
                         Color32::WHITE,
                     );
 
-                    // Overlay 2: Source Info Badge (Top Right) — DYNAMICALLY SIZED TO PREVENT ANY OVERFLOW!
+                    // Overlay 2: Source Info Badge (Top Right) â€” DYNAMICALLY SIZED TO PREVENT ANY OVERFLOW!
                     let aspect_str = match self.config.capture_source {
                         CaptureSourceChoice::Monitor(idx) => {
                             self.monitors.get(idx).map(|m| m.aspect_str.clone()).unwrap_or_else(|| "21:9".to_string())
@@ -551,7 +579,7 @@ impl eframe::App for RecordCraftApp {
                         CaptureSourceChoice::GameWindow => "16:9".to_string(),
                     };
                     let info_text = format!(
-                        "{} · {} · {} FPS",
+                        "{} Â· {} Â· {} FPS",
                         aspect_str,
                         self.config.resolution.label().split('(').next().unwrap_or("Native").trim(),
                         self.config.framerate
@@ -584,14 +612,14 @@ impl eframe::App for RecordCraftApp {
                 .show(ui, |ui| {
                     // Header Bar
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("🔊 Live Audio VU-Meter & Mixer").strong().size(14.0).color(pal.text));
-                        ui.label(RichText::new("• Real-Time Peak Visualizer").size(11.5).color(pal.text_dim));
+                        ui.label(RichText::new("ðŸ”Š Live Audio VU-Meter & Mixer").strong().size(14.0).color(pal.text));
+                        ui.label(RichText::new("â€¢ Real-Time Peak Visualizer").size(11.5).color(pal.text_dim));
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             // Routing Mode Toggle Pills
                             let is_per_app = self.config.audio_routing == AudioRoutingMode::PerAppIsolation;
                             let per_app_btn = egui::Button::new(
-                                RichText::new("🎛️ Per-App Routing")
+                                RichText::new("ðŸŽ›ï¸ Per-App Routing")
                                     .size(11.5)
                                     .color(if is_per_app { Color32::WHITE } else { pal.text_dim })
                             )
@@ -604,7 +632,7 @@ impl eframe::App for RecordCraftApp {
 
                             let is_all = self.config.audio_routing == AudioRoutingMode::AllSources;
                             let all_btn = egui::Button::new(
-                                RichText::new("📻 All Sources (Global Master)")
+                                RichText::new("ðŸ“» All Sources (Global Master)")
                                     .size(11.5)
                                     .color(if is_all { Color32::WHITE } else { pal.text_dim })
                             )
@@ -623,10 +651,10 @@ impl eframe::App for RecordCraftApp {
                     // Row A: Microphone (Always present & prominent)
                     let mic_lvl = if self.mic_muted { 0.0 } else { self.smoothed_mic_peak * self.mic_audio_vol };
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("🎙️ Voice Mic").strong().size(12.5).color(Color32::from_rgb(210, 225, 250)));
+                        ui.label(RichText::new("ðŸŽ™ï¸ Voice Mic").strong().size(12.5).color(Color32::from_rgb(210, 225, 250)));
                         
                         // Mute button
-                        let mute_label = if self.mic_muted { "🔇 Unmute" } else { "🔊 Mute" };
+                        let mute_label = if self.mic_muted { "ðŸ”‡ Unmute" } else { "ðŸ”Š Mute" };
                         let mute_col = if self.mic_muted { Color32::from_rgb(230, 50, 60) } else { Color32::from_rgb(32, 38, 54) };
                         if ui.add(egui::Button::new(RichText::new(mute_label).size(11.0).color(Color32::WHITE)).fill(mute_col).corner_radius(4.0)).clicked() {
                             self.mic_muted = !self.mic_muted;
@@ -656,10 +684,10 @@ impl eframe::App for RecordCraftApp {
                         AudioRoutingMode::AllSources => {
                             let master_lvl = if self.master_muted { 0.0 } else { self.smoothed_master_peak * self.system_audio_vol };
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new("🔊 Master Desktop").strong().size(12.5).color(Color32::from_rgb(210, 225, 250)));
+                                ui.label(RichText::new("ðŸ”Š Master Desktop").strong().size(12.5).color(Color32::from_rgb(210, 225, 250)));
 
                                // Mute button
-                                let mute_label = if self.master_muted { "🔇 Unmute" } else { "🔊 Mute" };
+                                let mute_label = if self.master_muted { "ðŸ”‡ Unmute" } else { "ðŸ”Š Mute" };
                                 let mute_col = if self.master_muted { Color32::from_rgb(230, 50, 60) } else { Color32::from_rgb(32, 38, 54) };
                                 if ui.add(egui::Button::new(RichText::new(mute_label).size(11.0).color(Color32::WHITE)).fill(mute_col).corner_radius(4.0)).clicked() {
                                     self.master_muted = !self.master_muted;
@@ -684,14 +712,14 @@ impl eframe::App for RecordCraftApp {
                         }
                         AudioRoutingMode::PerAppIsolation => {
                             if self.audio_state.apps.is_empty() {
-                                ui.label(RichText::new("ℹ️ No active audio applications detected on Windows. Start playing audio in Discord, Spotify, or a Game to see live meters!").size(12.0).color(Color32::from_rgb(150, 165, 195)));
+                                ui.label(RichText::new("â„¹ï¸ No active audio applications detected on Windows. Start playing audio in Discord, Spotify, or a Game to see live meters!").size(12.0).color(Color32::from_rgb(150, 165, 195)));
                             } else {
                                 ui.label(RichText::new("Active Applications (Toggle checkbox to include in recording):").size(11.5).color(Color32::from_rgb(160, 175, 205)));
                                 
                                 for app in &self.audio_state.apps {
                                     let pid = app.pid;
                                     let mut is_sel = self.selected_app_pids.contains(&pid);
-                                    let app_peak = self.smoothed_app_peaks.get(&pid).copied().unwrap_or(0.0);
+                                    let app_peak = self.smoothed_app_peaks.get(&pid.to_string()).copied().unwrap_or(0.0);
                                     let is_active = app.is_active || app_peak > 0.01;
 
                                     ui.horizontal(|ui| {
@@ -704,11 +732,11 @@ impl eframe::App for RecordCraftApp {
                                         }
 
                                         let name_col = if is_sel { Color32::WHITE } else { Color32::GRAY };
-                                        let active_dot = if is_active { "🟢 " } else { "⚪ " };
+                                        let active_dot = if is_active { "ðŸŸ¢ " } else { "âšª " };
                                         ui.label(RichText::new(format!("{active_dot}{}", app.display_name)).strong().size(12.0).color(name_col));
 
                                         // Mute toggle
-                                        let mute_label = if app.is_muted { "🔇" } else { "🔊" };
+                                        let mute_label = if app.is_muted { "ðŸ”‡" } else { "ðŸ”Š" };
                                         if ui.button(mute_label).on_hover_text("Toggle Mute in Windows Mixer").clicked() {
                                             set_process_volume(pid, app.volume, !app.is_muted);
                                         }
@@ -759,12 +787,12 @@ impl eframe::App for RecordCraftApp {
 
                             ui.add_space(20.0);
                             ui.label(RichText::new(format!("{} FPS", self.config.framerate)).size(13.0).color(Color32::from_rgb(130, 175, 245)));
-                            ui.label(RichText::new("•").color(Color32::from_rgb(60, 75, 95)));
+                            ui.label(RichText::new("â€¢").color(Color32::from_rgb(60, 75, 95)));
                             ui.label(RichText::new(self.config.codec.label()).size(13.0).color(Color32::from_rgb(180, 195, 220)));
 
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 // Stop Recording Button
-                                let stop_btn = egui::Button::new(RichText::new("■ STOP RECORDING (F9)").strong().size(14.0).color(Color32::WHITE))
+                                let stop_btn = egui::Button::new(RichText::new("â–  STOP RECORDING (F9)").strong().size(14.0).color(Color32::WHITE))
                                     .fill(Color32::from_rgb(215, 35, 60))
                                     .corner_radius(8.0)
                                     .min_size(vec2(220.0, 44.0));
@@ -777,7 +805,7 @@ impl eframe::App for RecordCraftApp {
 
                                 ui.add_space(10.0);
                                 // Highlight Marker Button
-                                let mark_btn = egui::Button::new(RichText::new("★ Highlight Marker (F10)").strong().size(13.0).color(Color32::BLACK))
+                                let mark_btn = egui::Button::new(RichText::new("â˜… Highlight Marker (F10)").strong().size(13.0).color(Color32::BLACK))
                                     .fill(Color32::from_rgb(250, 190, 20))
                                     .corner_radius(8.0)
                                     .min_size(vec2(180.0, 44.0));
@@ -795,7 +823,7 @@ impl eframe::App for RecordCraftApp {
                         ui.horizontal(|ui| {
                             // Massive Glowing START RECORDING Button
                             let rec_btn = egui::Button::new(
-                                RichText::new("● START RECORDING (F9)")
+                                RichText::new("â— START RECORDING (F9)")
                                     .size(16.0)
                                     .strong()
                                     .color(Color32::WHITE)
@@ -808,7 +836,8 @@ impl eframe::App for RecordCraftApp {
                                 if let Err(e) = self.recorder.start_recording(&self.config, &self.monitors, &self.drive) {
                                     self.status_message = format!("Failed to start recording: {e}");
                                 } else {
-                                    self.status_message = "Recording started...".to_string();
+                                    self.apply_per_app_recording_mute();
+                                        self.status_message = "Recording started...".to_string();
                                 }
                             }
 
@@ -824,7 +853,7 @@ impl eframe::App for RecordCraftApp {
                                 };
                                 ui.label(
                                     RichText::new(format!(
-                                        "Target: {} · {} · {} FPS",
+                                        "Target: {} Â· {} Â· {} FPS",
                                         src_name,
                                         self.config.resolution.label(),
                                         self.config.framerate,
@@ -847,9 +876,9 @@ impl eframe::App for RecordCraftApp {
                     .inner_margin(14.0)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("🎉 Recording saved & synced to Google Drive!").strong().size(14.0).color(Color32::WHITE));
+                            ui.label(RichText::new("ðŸŽ‰ Recording saved & synced to Google Drive!").strong().size(14.0).color(Color32::WHITE));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let edit_btn = egui::Button::new(RichText::new("🎬 Directly Open & Edit in CutCraft").color(Color32::WHITE).strong().size(13.5))
+                                let edit_btn = egui::Button::new(RichText::new("ðŸŽ¬ Directly Open & Edit in CutCraft").color(Color32::WHITE).strong().size(13.5))
                                     .fill(Color32::from_rgb(50, 110, 240))
                                     .corner_radius(6.0)
                                     .min_size(vec2(320.0, 36.0));
@@ -883,9 +912,9 @@ impl eframe::App for RecordCraftApp {
                         .inner_margin(16.0)
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new("🖥️ Capture Source & Display").strong().size(14.0).color(pal.text));
+                                ui.label(RichText::new("ðŸ–¥ï¸ Capture Source & Display").strong().size(14.0).color(pal.text));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.button("🔄").on_hover_text("Re-query connected monitors and windows").clicked() {
+                                    if ui.button("ðŸ”„").on_hover_text("Re-query connected monitors and windows").clicked() {
                                         self.refresh_displays();
                                     }
                                 });
@@ -938,7 +967,7 @@ impl eframe::App for RecordCraftApp {
                                             }
                                         });
 
-                                    if ui.button("🔄").clicked() {
+                                    if ui.button("ðŸ”„").clicked() {
                                         self.available_windows = get_active_windows();
                                     }
                                 });
@@ -982,7 +1011,7 @@ impl eframe::App for RecordCraftApp {
                         .corner_radius(12.0)
                         .inner_margin(16.0)
                         .show(ui, |ui| {
-                            ui.label(RichText::new("🎙️ Audio Mixer & Multi-Track").strong().size(14.0).color(pal.text));
+                            ui.label(RichText::new("ðŸŽ™ï¸ Audio Mixer & Multi-Track").strong().size(14.0).color(pal.text));
                             ui.separator();
 
                             ui.checkbox(&mut self.config.multi_track_audio, "Enable Multi-Track Audio (Game + Mic)");
@@ -991,11 +1020,11 @@ impl eframe::App for RecordCraftApp {
                             ui.label(RichText::new("Routing Mode:").size(12.0).color(pal.text_dim));
                             ui.horizontal(|ui| {
                                 let is_all = self.config.audio_routing == AudioRoutingMode::AllSources;
-                                if ui.selectable_label(is_all, "📻 Master").clicked() {
+                                if ui.selectable_label(is_all, "ðŸ“» Master").clicked() {
                                     self.config.audio_routing = AudioRoutingMode::AllSources;
                                 }
                                 let is_iso = self.config.audio_routing == AudioRoutingMode::PerAppIsolation;
-                                if ui.selectable_label(is_iso, "🎛️ Per-App").clicked() {
+                                if ui.selectable_label(is_iso, "ðŸŽ›ï¸ Per-App").clicked() {
                                     self.config.audio_routing = AudioRoutingMode::PerAppIsolation;
                                 }
                             });
@@ -1054,7 +1083,7 @@ impl eframe::App for RecordCraftApp {
                         .corner_radius(12.0)
                         .inner_margin(16.0)
                         .show(ui, |ui| {
-                            ui.label(RichText::new("⚡ Hardware Encoder & CutCraft").strong().size(14.0).color(pal.text));
+                            ui.label(RichText::new("âš¡ Hardware Encoder & CutCraft").strong().size(14.0).color(pal.text));
                             ui.separator();
 
                             ui.label(RichText::new("GPU Hardware Encoder:").size(12.0).color(pal.text_dim));
@@ -1099,7 +1128,7 @@ impl eframe::App for RecordCraftApp {
 
                             ui.add_space(10.0);
                             let open_btn = egui::Button::new(
-                                RichText::new("🎬 Open Project in CutCraft").strong().color(Color32::WHITE).size(13.5)
+                                RichText::new("ðŸŽ¬ Open Project in CutCraft").strong().color(Color32::WHITE).size(13.5)
                             )
                             .fill(Color32::from_rgb(50, 105, 230))
                             .stroke(Stroke::new(1.0, Color32::from_rgb(99, 140, 248)))
@@ -1115,3 +1144,11 @@ impl eframe::App for RecordCraftApp {
         });
     }
 }
+
+impl Drop for RecordCraftApp {
+    fn drop(&mut self) {
+        self.restore_per_app_recording_mute();
+    }
+}
+
+
