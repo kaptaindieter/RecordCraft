@@ -27,7 +27,7 @@ pub const QUICK_CHIPS: [(&str, &str, &str); 4] = [
 pub struct CustomBot {
     pub id: String,
     pub name: String,
-    #[serde(alias = "modelId", alias = "model", alias = "api_model_id", default)]
+    #[serde(alias = "modelId", alias = "model", alias = "api_model_id", alias = "model_id", default)]
     pub api_model_id: String,
     #[serde(alias = "baseUrl", alias = "base_url", alias = "endpoint", default)]
     pub endpoint: String,
@@ -1365,9 +1365,13 @@ impl ArtCraftAgent {
             self.render_manage_apis_modal(ui.ctx());
         }
 
-        if let Some(prompt_to_send) = pending_prompt_to_send {
-            self.input_text = prompt_to_send;
-            self.send_prompt(summary.to_string(), project_dir_str.to_string());
+        // (d) Doppeltes Absenden im selben Frame verhindern (Enter + Button):
+        //     is_busy wird in send_prompt() gesetzt und erst nach Worker-Ende zurückgesetzt.
+        if !self.is_busy {
+            if let Some(prompt_to_send) = pending_prompt_to_send {
+                self.input_text = prompt_to_send;
+                self.send_prompt(summary.to_string(), project_dir_str.to_string());
+            }
         }
     }
 
@@ -1866,6 +1870,16 @@ impl ArtCraftAgent {
         }
 
         let Some(bot) = self.active_bot().cloned() else {
+            // Fall 1: keine API aktiv -> genau EINE Meldung, kein Request, kein Fallback-Text.
+            self.messages.push(ChatMessage {
+                role: "assistant".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+                content: "⚠️ Bitte hinterlege zuerst eine API-Verbindung über „APIs / Keys“.".to_string(),
+                executed_commands: Vec::new(),
+                manually_inserted: false,
+            });
             self.show_manage_apis_modal = true;
             return;
         };
@@ -2562,6 +2576,7 @@ fn worker_loop(
                 let allow_tools = !is_pure_greeting_or_smalltalk(&prompt);
                 let tools = app_tools_definition();
                 let mut has_emitted_reply = false;
+                let mut fatal_error = false;
                 let mut executed_badges: Vec<String> = Vec::new();
                 let mut executed_details: Vec<(String, Value, Value)> = Vec::new();
 
@@ -2615,6 +2630,7 @@ fn worker_loop(
                             serde_json::from_str::<Value>(&buf)
                         }
                         Err(e) => {
+                            fatal_error = true;
                             let _ = event_tx.send(AgentEvent::Error(format!("Network error: {e}")));
                             break;
                         }
@@ -2623,12 +2639,14 @@ fn worker_loop(
                     let response_json = match response_val {
                         Ok(v) => v,
                         Err(e) => {
+                            fatal_error = true;
                             let _ = event_tx.send(AgentEvent::Error(format!("Invalid API response (JSON): {e}")));
                             break;
                         }
                     };
 
                     if let Some(err_msg) = response_json.get("error").and_then(|e| e.get("message")).and_then(Value::as_str) {
+                        fatal_error = true;
                         let _ = event_tx.send(AgentEvent::Error(err_msg.to_string()));
                         break;
                     }
@@ -2651,6 +2669,7 @@ fn worker_loop(
                     }
 
                     let Some(choice) = response_json.get("choices").and_then(Value::as_array).and_then(|a| a.first()) else {
+                        fatal_error = true;
                         let _ = event_tx.send(AgentEvent::Error("Empty response received from API endpoint.".to_string()));
                         break;
                     };
@@ -2766,7 +2785,7 @@ fn worker_loop(
                     }
                 }
 
-                if !has_emitted_reply {
+                if !has_emitted_reply && !fatal_error {
                     let fallback = if !executed_details.is_empty() {
                         build_rich_summary_for_executed_tools(&executed_details)
                     } else {
