@@ -1,0 +1,36 @@
+
+
+# Craft Suite Standard Exclusions
+target/
+**/*.rs.bk
+*.pdb
+node_modules/
+dist/
+build/
+release/
+build-deps/
+.env
+.env.*
+*.local
+*.local.*
+config.local.json
+shared-ai-models.json
+shared-ai-config.json
+shared_custom_models.json
+cloud-config.json
+user-settings.json
+artcraft_theme.json
+*.log
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+
+# --- ArtCraft clean import: required ignore rules ---
+engines/
+*.pfx
+*.pem
+*.zip
+*.exe
+*.dll
+

@@ -1,0 +1,38 @@
+[package]
+name = "recordcraft"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a", default-features = false, features = ["default_fonts", "glow"] }
+egui = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a", features = ["default_fonts"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+rfd = "0.15"
+ureq = { version = "3.5", features = ["rustls"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Threading",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Foundation",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_Graphics_Gdi",
+] }
+
+[build-dependencies]
+winresource = "0.1"
+
+[patch.crates-io]
+ecolor = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+emath = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+epaint = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+epaint_default_fonts = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui-winit = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui_glow = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+eframe = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457d84ee4975110bfda6797c44dc" }
