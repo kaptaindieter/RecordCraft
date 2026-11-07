@@ -250,34 +250,109 @@ impl RecordCraftApp {
             let _ = std::fs::write(&handoff_file, serde_json::to_string_pretty(&handoff_data).unwrap_or_default());
         }
 
+        // Launch candidates, most specific first. Every candidate is resolved
+        // against RecordCraft's own executable folder - never against the
+        // process working directory, which is `C:\Windows\System32` (or
+        // arbitrary) when the app is started from the Start menu or a
+        // shortcut. That was the core of the broken integration: the old
+        // relative `../cutcraft/...` paths existed for nobody in that case,
+        // and the spawn failure was silently discarded.
+        let base = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()));
+        let rel = |candidate: &str| {
+            let p = PathBuf::from(candidate);
+            match &base {
+                Some(dir) => dir.join(p),
+                None => p,
+            }
+        };
+        // The dev build lands in the CutCraft workspace's own target folder
+        // (`<repo>/src/target/release`, producing `concat.exe`), while
+        // `Build.ps1` / `Pack.ps1` copy a packaged `cutcraft.exe` into
+        // `<repo>/target/release`. Both spellings of the sibling folder are
+        // covered (Windows paths are case-insensitive anyway).
         let candidates = [
-            PathBuf::from("../cutcraft/target/release/cutcraft.exe"),
-            PathBuf::from("../cutcraft/src/target/release/concat.exe"),
-        ];
+            "../CutCraft/src/target/release/concat.exe",
+            "../CutCraft/src/target/release/cutcraft.exe",
+            "../CutCraft/target/release/cutcraft.exe",
+            "../CutCraft/target/release/concat.exe",
+            "../concat/src/target/release/concat.exe",
+            "../concat/target/release/concat.exe",
+        ]
+        .iter()
+        .map(|c| rel(c))
+        .collect::<Vec<_>>();
 
         let mut launched = false;
-        for c in candidates {
+        let mut spawn_errors: Vec<String> = Vec::new();
+        for c in &candidates {
             if c.exists() {
-                let _ = Command::new(&c).arg("--import-handoff").arg("--project").arg(&proj_dir).spawn();
-                self.status_message = format!("Opened in CutCraft: {}", proj_dir.display());
-                launched = true;
-                break;
+                match Command::new(c)
+                    .current_dir(proj_dir.parent().unwrap_or(std::path::Path::new(".")))
+                    .arg("--import-handoff")
+                    .arg("--project")
+                    .arg(&proj_dir)
+                    .spawn()
+                {
+                    Ok(_) => {
+                        self.status_message = format!("Opened in CutCraft: {}", proj_dir.display());
+                        launched = true;
+                        break;
+                    }
+                    Err(e) => {
+                        spawn_errors.push(format!("{}: {e}", c.display()));
+                    }
+                }
             }
         }
 
         if !launched {
-            let _ = Command::new("cargo")
+            // Fall back to building and running from the workspace, using an
+            // absolute manifest path resolved the same way as the candidates.
+            let manifest = rel("../CutCraft/src/Cargo.toml");
+            let manifest = if manifest.exists() {
+                manifest
+            } else {
+                rel("../concat/src/Cargo.toml")
+            };
+            match Command::new("cargo")
                 .arg("run")
                 .arg("-p")
                 .arg("concat")
+                .arg("--release")
                 .arg("--manifest-path")
-                .arg("../cutcraft/src/Cargo.toml")
+                .arg(&manifest)
                 .arg("--")
                 .arg("--import-handoff")
                 .arg("--project")
                 .arg(&proj_dir)
-                .spawn();
-            self.status_message = format!("Launched CutCraft via Cargo: {}", proj_dir.display());
+                .spawn()
+            {
+                Ok(_) => {
+                    self.status_message = format!(
+                        "Launched CutCraft via Cargo (building): {}",
+                        proj_dir.display()
+                    );
+                }
+                Err(e) => {
+                    let detail = if spawn_errors.is_empty() {
+                        format!(
+                            "no CutCraft executable found next to RecordCraft ({})",
+                            base
+                                .as_ref()
+                                .map(|b| b.join("..").display().to_string())
+                                .unwrap_or_else(|| "unknown".to_string())
+                        )
+                    } else {
+                        spawn_errors.join("; ")
+                    };
+                    self.status_message = format!(
+                        "Could not launch CutCraft: {detail}. Also: {e}. Project saved at {} - open it in CutCraft manually.",
+                        proj_dir.display()
+                    );
+                }
+            }
         }
     }
 
@@ -288,12 +363,16 @@ impl RecordCraftApp {
                 HotkeyEvent::ToggleRecord => {
                     if self.recorder.is_recording() {
                         self.restore_per_app_recording_mute();
-                            if let Ok((file, proj)) = self.recorder.stop_recording(&self.drive) {
-                            self.status_message = format!(
-                                "Recording stopped & saved: {}",
-                                file.file_name().and_then(|n| n.to_str()).unwrap_or("")
-                            );
-                            let _ = proj;
+                        match self.recorder.stop_recording(&self.drive) {
+                            Ok((file, _proj)) => {
+                                self.status_message = format!(
+                                    "Recording stopped & saved: {}",
+                                    file.file_name().and_then(|n| n.to_str()).unwrap_or("")
+                                );
+                            }
+                            Err(e) => {
+                                self.status_message = format!("Failed to stop recording: {e}");
+                            }
                         }
                     } else {
                         if let Err(e) = self.recorder.start_recording(&self.config, &self.monitors, &self.drive) {
@@ -798,8 +877,13 @@ impl eframe::App for RecordCraftApp {
                                     .min_size(vec2(220.0, 44.0));
 
                                 if ui.add(stop_btn).clicked() {
-                                    if let Ok((file, _)) = self.recorder.stop_recording(&self.drive) {
-                                        self.status_message = format!("Saved to: {}", file.display());
+                                    match self.recorder.stop_recording(&self.drive) {
+                                        Ok((file, _proj)) => {
+                                            self.status_message = format!("Saved to: {}", file.display());
+                                        }
+                                        Err(e) => {
+                                            self.status_message = format!("Failed to stop recording: {e}");
+                                        }
                                     }
                                 }
 

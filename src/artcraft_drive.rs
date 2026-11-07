@@ -118,82 +118,119 @@ impl RecordCraftDrive {
         (proj_dir, raw_dir)
     }
 
-    /// Creates a complete CutCraft project (concat.json) with media item and timeline clip
+    /// Creates a complete CutCraft project (`concat.json`) with the recorded
+    /// video as media and a clip placed on the timeline.
+    ///
+    /// The document shape below mirrors what CutCraft's own writer produces
+    /// (`concat-project::to_document`) and is what its loader
+    /// (`Editor::from_document`) reads: the top-level `tracks`/`clips`/`video`
+    /// are the flat mirror every build reads, and `timelines[0]` is the modern
+    /// container. Cutting the recording on the timeline requires the clip to
+    /// live in that top-level `clips` mirror - earlier versions only put it
+    /// inside `timelines[0]`, which CutCraft's reader ignores, so the project
+    /// opened with an empty timeline. The media's resolution, frame rate,
+    /// duration and audio streams are probed from the file so the canvas and
+    /// clip length match what is actually on disk.
     pub fn create_cutcraft_project(&self, project_name: &str, media_file: &Path) -> std::io::Result<PathBuf> {
+        use crate::recorder::probe_media_info;
+
         let (proj_dir, _) = self.prepare_project_folders(project_name);
         let project_file = proj_dir.join("concat.json");
 
         let media_path_str = media_file.to_string_lossy().to_string();
         let media_name = media_file.file_name().and_then(|n| n.to_str()).unwrap_or("Recording");
 
+        let probe = probe_media_info(media_file).unwrap_or_default();
+        let duration = probe.duration.max(1.0);
+        let width = probe.width.max(1);
+        let height = probe.height.max(1);
+        let rate_num = probe.rate_num.max(1);
+        let rate_den = if probe.rate_den > 0 { probe.rate_den } else { 1 };
+
+        // One entry per audio stream the file carries, so a clip can pick one.
+        let audio_tracks: Vec<serde_json::Value> = (0..probe.audio_track_count)
+            .map(|index| serde_json::json!({ "index": index }))
+            .collect();
+
+        // The four starter lanes of the first timeline.
+        let tracks = [
+            serde_json::json!({ "id": "T1", "muted": false, "visible": true }),
+            serde_json::json!({ "id": "T2", "muted": false, "visible": true }),
+            serde_json::json!({ "id": "T3", "muted": false, "visible": true }),
+            serde_json::json!({ "id": "T4", "muted": false, "visible": true }),
+        ];
+
+        // The recording placed from the start of the timeline, running for its
+        // full length at unity speed with no fades or transform.
+        let clip = serde_json::json!({
+            "id": "c1",
+            "trackId": "T1",
+            "mediaId": "m1",
+            "name": media_name,
+            "kind": "video",
+            "start": 0.0,
+            "duration": duration,
+            "sourceStart": 0.0,
+            "volume": 1.0,
+            "fadeIn": 0.0,
+            "fadeOut": 0.0,
+            "scale": 1.0,
+            "offsetX": 0.0,
+            "offsetY": 0.0,
+            "rotation": 0.0,
+            "opacity": 1.0,
+            "speed": 1.0
+        });
+
+        // The full document: the modern `timelines` array plus the flat
+        // top-level `tracks` / `clips` / `video` mirror, exactly as CutCraft
+        // writes and reads it.
         let concat_json = serde_json::json!({
-            "activeTimelineId": "TL1",
             "concat": "0.1.0",
-            "fonts": [],
+            "version": 1,
             "name": project_name,
+            "video": {
+                "width": width,
+                "height": height,
+                "rateNum": rate_num,
+                "rateDen": rate_den
+            },
             "media": [
                 {
                     "id": "m1",
-                    "name": media_name,
                     "path": media_path_str,
+                    "name": media_name,
+                    "duration": duration,
                     "kind": "video",
-                    "hasAudio": true,
-                    "audioTracks": [
-                        { "index": 0 },
-                        { "index": 1 }
-                    ]
+                    "width": width,
+                    "height": height,
+                    "frameRate": (rate_num as f64) / (rate_den as f64),
+                    "frameRateFraction": format!("{rate_num}/{rate_den}"),
+                    "hasAudio": probe.has_audio,
+                    "audioTracks": audio_tracks
                 }
             ],
+            "tracks": tracks,
+            "clips": [ clip ],
+            "fonts": [],
             "timelines": [
                 {
                     "id": "TL1",
                     "name": "Timeline 1",
-                    "tracks": [
-                        { "id": "T1", "muted": false, "visible": true },
-                        { "id": "T2", "muted": false, "visible": true },
-                        { "id": "T3", "muted": false, "visible": true },
-                        { "id": "T4", "muted": false, "visible": true }
-                    ],
-                    "clips": [
-                        {
-                            "id": "c1",
-                            "trackId": "T1",
-                            "mediaId": "m1",
-                            "name": media_name,
-                            "kind": "video",
-                            "start": 0.0,
-                            "duration": 600.0,
-                            "sourceStart": 0.0,
-                            "volume": 1.0,
-                            "fadeIn": 0.0,
-                            "fadeOut": 0.0,
-                            "scale": 1.0,
-                            "offsetX": 0.0,
-                            "offsetY": 0.0,
-                            "rotation": 0.0,
-                            "opacity": 1.0,
-                            "speed": 1.0
-                        }
-                    ],
                     "video": {
-                        "width": 1920,
-                        "height": 1080,
-                        "rateNum": 60,
-                        "rateDen": 1
-                    }
+                        "width": width,
+                        "height": height,
+                        "rateNum": rate_num,
+                        "rateDen": rate_den
+                    },
+                    "tracks": tracks,
+                    "clips": [ clip ]
                 }
             ],
-            "tracks": [
-                { "id": "T1", "muted": false, "visible": true },
-                { "id": "T2", "muted": false, "visible": true },
-                { "id": "T3", "muted": false, "visible": true },
-                { "id": "T4", "muted": false, "visible": true }
-            ]
+            "activeTimelineId": "TL1"
         });
 
         std::fs::write(&project_file, serde_json::to_string_pretty(&concat_json)?)?;
-        let project_concat_file = proj_dir.join("project.concat");
-        let _ = std::fs::write(&project_concat_file, serde_json::to_string_pretty(&concat_json)?);
         Ok(proj_dir)
     }
 
